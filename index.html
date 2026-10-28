@@ -74,6 +74,40 @@
   td.act { white-space:nowrap; text-align:right; width:84px; }
   td.act button { background:none; border:0; color:var(--muted); font-size:18px; padding:4px 8px; }
   .na { color:var(--muted); }
+
+  /* Calendar tab */
+  .calbar { display:flex; justify-content:center; margin-bottom:10px; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .seg button { background:var(--bg); color:var(--muted); border:0; padding:10px 24px; font-size:15px; }
+  .seg button.on { background:var(--accent); color:#fff; }
+  .calnav { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .calnav button { font-size:20px; padding:6px 16px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  #calTitle { font-size:18px; font-weight:600; }
+  .calwrap { display:flex; gap:8px; align-items:stretch; }
+  #calMain { flex:1; min-width:0; }
+  .monthgrid { display:grid; grid-template-columns:repeat(7,1fr); gap:3px; }
+  .dow { text-align:center; font-size:12px; color:var(--muted); padding:4px 0; }
+  .day { min-height:56px; border-radius:6px; background:var(--card); padding:3px 4px; display:flex; flex-direction:column;
+    justify-content:space-between; color:#111; border:2px solid transparent; cursor:pointer; overflow:hidden; }
+  .day.blank { background:none; cursor:default; }
+  .day.uncolored { color:var(--muted); }
+  .day.sel { border-color:var(--fg); }
+  .day .n { font-size:11px; font-weight:600; }
+  .day.today .n { text-decoration:underline; }
+  .day .c { font-size:11px; text-align:right; }
+  .yeargrid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .mtile { border-radius:10px; padding:10px 8px; min-height:96px; background:var(--card); color:#111; cursor:pointer;
+    display:flex; flex-direction:column; justify-content:space-between; }
+  .mtile.uncolored { color:var(--muted); }
+  .mtile .mn { font-weight:600; }
+  .mtile .av { font-size:18px; font-weight:700; }
+  .mtile .dc { font-size:11px; opacity:.75; }
+  #scale { position:relative; width:52px; flex:none; }
+  #scaleBar { position:absolute; left:0; top:8px; bottom:8px; width:14px; border-radius:7px; }
+  .slabel { position:absolute; left:20px; font-size:11px; color:var(--muted); transform:translateY(-50%); white-space:nowrap; }
+  #calNote { font-size:12px; margin:10px 0 0; }
+  #dayDetail { margin-top:14px; }
+  #dayDetail h3 { margin:0 0 4px; font-size:16px; }
 </style>
 </head>
 <body>
@@ -143,7 +177,22 @@
         </table>
       </div>
     </section>
-    <section id="tab-calendar" class="hidden"><h2>Calendar</h2><p class="muted">Placeholder: calendar goes here.</p></section>
+    <section id="tab-calendar" class="hidden">
+      <div class="calbar"><div class="seg">
+        <button id="viewYear">Year</button><button id="viewMonth">Month</button>
+      </div></div>
+      <div class="calnav">
+        <button id="calPrev" aria-label="Previous">‹</button>
+        <div id="calTitle"></div>
+        <button id="calNext" aria-label="Next">›</button>
+      </div>
+      <div class="calwrap">
+        <div id="calMain"></div>
+        <div id="scale"><div id="scaleBar"></div></div>
+      </div>
+      <p id="calNote" class="muted"></p>
+      <div id="dayDetail" class="hidden"></div>
+    </section>
     <section id="tab-stats" class="hidden"><h2>Stats</h2><p class="muted">Placeholder: stats go here.</p>
       <button class="primary" id="logoutBtn" style="margin-top:24px">Sign out</button></section>
   </main>
@@ -181,6 +230,7 @@ function shiftDate(str, days) {
 function showTab(name) {
   document.querySelectorAll("main section").forEach(s => s.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
+  if (name === "calendar") loadCalendar();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
@@ -358,9 +408,21 @@ async function addEntry() {
   const qty = parseFloat($("qty").value);
   if (!food) { msg.textContent = "Pick a food from the list (add new foods on the Foods tab)."; return; }
   if (!(qty > 0)) { msg.textContent = "Enter a quantity above 0."; return; }
-  const { error } = await db.from("entries").insert({
-    entry_date: $("logDate").value, food_name: food.name, quantity: qty, calories_each: food.calories, protein_each: food.protein
-  });
+  const date = $("logDate").value;
+  // If this food is already logged that day (same name and calories), add to its quantity instead of a new row
+  const { data: existing, error: findErr } = await db.from("entries").select("id,quantity")
+    .eq("entry_date", date).eq("food_name", food.name).eq("calories_each", food.calories)
+    .order("created_at").limit(1);
+  if (findErr) { msg.textContent = "Error: " + findErr.message; return; }
+  let error;
+  if (existing.length) {
+    const newQty = Math.round((existing[0].quantity + qty) * 1000) / 1000;
+    ({ error } = await db.from("entries").update({ quantity: newQty }).eq("id", existing[0].id));
+  } else {
+    ({ error } = await db.from("entries").insert({
+      entry_date: date, food_name: food.name, quantity: qty, calories_each: food.calories, protein_each: food.protein
+    }));
+  }
   if (error) { msg.textContent = "Error: " + error.message; return; }
   selectedFood = null;
   $("foodInput").value = "";
@@ -377,6 +439,167 @@ $("prevDay").onclick = () => setDate(shiftDate($("logDate").value, -1));
 $("nextDay").onclick = () => setDate(shiftDate($("logDate").value, 1));
 $("todayBtn").onclick = () => setDate(todayStr());
 $("addBtn").onclick = addEntry;
+
+/* ---------- calendar ---------- */
+const MIN_CAL = 1500, MAX_CAL = 3500;
+// [calories, hue]: green 1500-2000, yellow 2000-2500, red 2500+
+const HUE_STOPS = [[1500,135],[1950,100],[2000,58],[2500,48],[2560,12],[3500,0]];
+function hueFor(c) {
+  c = Math.min(Math.max(c, MIN_CAL), MAX_CAL);
+  for (let i = 1; i < HUE_STOPS.length; i++) {
+    const [c0, h0] = HUE_STOPS[i - 1], [c1, h1] = HUE_STOPS[i];
+    if (c <= c1) return h0 + (h1 - h0) * (c - c0) / (c1 - c0);
+  }
+  return 0;
+}
+const colorFor = c => c >= MIN_CAL ? `hsl(${hueFor(c)}, 75%, 58%)` : null;
+const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+const pad = n => String(n).padStart(2, "0");
+const num = n => Math.round(n).toLocaleString();
+
+let calView = "month", calData = {}, selDay = null;
+let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
+
+async function fetchYear(y) {
+  const totals = {};
+  let from = 0;
+  while (true) {
+    const { data, error } = await db.from("entries").select("entry_date,quantity,calories_each")
+      .gte("entry_date", `${y}-01-01`).lte("entry_date", `${y}-12-31`).order("id").range(from, from + 999);
+    if (error) throw error;
+    data.forEach(e => { totals[e.entry_date] = (totals[e.entry_date] || 0) + e.quantity * e.calories_each; });
+    if (data.length < 1000) break;
+    from += 1000;
+  }
+  return totals;
+}
+async function ensureYear(y) {
+  if (calData[y]) return;
+  $("calTitle").textContent = "Loading…";
+  try { calData[y] = await fetchYear(y); }
+  catch (e) { calData[y] = {}; $("calNote").textContent = "Error: " + e.message; }
+}
+async function loadCalendar() {
+  calData = {};
+  await ensureYear(calYear);
+  renderCalendar();
+  if (selDay && calView === "month") loadDayDetail(selDay);
+}
+
+function renderScale() {
+  const bar = $("scaleBar"), scale = $("scale");
+  if (bar.dataset.done) return;
+  bar.dataset.done = "1";
+  const stops = [];
+  for (let c = MAX_CAL; c >= MIN_CAL; c -= 50) stops.push(`${colorFor(c)} ${((MAX_CAL - c) / (MAX_CAL - MIN_CAL) * 100).toFixed(1)}%`);
+  bar.style.background = `linear-gradient(to bottom, ${stops.join(",")})`;
+  [3500, 3000, 2500, 2000, 1500].forEach(v => {
+    const l = document.createElement("div");
+    l.className = "slabel";
+    l.textContent = num(v);
+    l.style.top = `calc(8px + (100% - 16px) * ${(MAX_CAL - v) / (MAX_CAL - MIN_CAL)})`;
+    scale.appendChild(l);
+  });
+}
+
+function renderCalendar() {
+  renderScale();
+  $("viewYear").classList.toggle("on", calView === "year");
+  $("viewMonth").classList.toggle("on", calView === "month");
+  const main = $("calMain");
+  main.innerHTML = "";
+  const data = calData[calYear] || {};
+
+  if (calView === "year") {
+    $("calTitle").textContent = calYear;
+    $("dayDetail").classList.add("hidden");
+    $("calNote").textContent = "Each month is colored by the average of its days with 1,500+ calories logged.";
+    const grid = document.createElement("div"); grid.className = "yeargrid";
+    for (let m = 0; m < 12; m++) {
+      let sum = 0, cnt = 0;
+      Object.entries(data).forEach(([d, t]) => {
+        if (+d.slice(5, 7) === m + 1 && t >= MIN_CAL) { sum += t; cnt++; }
+      });
+      const avg = cnt ? sum / cnt : null;
+      const tile = document.createElement("div");
+      tile.className = "mtile" + (avg === null ? " uncolored" : "");
+      if (avg !== null) tile.style.background = colorFor(avg);
+      tile.innerHTML = `<div class="mn">${MONTHS[m].slice(0, 3)}</div><div class="av">${avg === null ? "—" : num(avg)}</div><div class="dc">${cnt ? cnt + " days" : "no data"}</div>`;
+      tile.onclick = () => { calMonth = m; calView = "month"; selDay = null; renderCalendar(); };
+      grid.appendChild(tile);
+    }
+    main.appendChild(grid);
+    return;
+  }
+
+  $("calTitle").textContent = `${MONTHS[calMonth]} ${calYear}`;
+  $("calNote").textContent = "Days under 1,500 calories are treated as not fully logged and left uncolored.";
+  const grid = document.createElement("div"); grid.className = "monthgrid";
+  "SMTWTFS".split("").forEach(d => { const h = document.createElement("div"); h.className = "dow"; h.textContent = d; grid.appendChild(h); });
+  const startDow = new Date(calYear, calMonth, 1).getDay();
+  const dim = new Date(calYear, calMonth + 1, 0).getDate();
+  for (let i = 0; i < startDow; i++) { const b = document.createElement("div"); b.className = "day blank"; grid.appendChild(b); }
+  const today = todayStr();
+  for (let d = 1; d <= dim; d++) {
+    const key = `${calYear}-${pad(calMonth + 1)}-${pad(d)}`;
+    const total = data[key];
+    const col = total !== undefined ? colorFor(total) : null;
+    const cell = document.createElement("div");
+    cell.className = "day" + (col ? "" : " uncolored") + (key === today ? " today" : "") + (key === selDay ? " sel" : "");
+    if (col) cell.style.background = col;
+    cell.innerHTML = `<div class="n">${d}</div><div class="c">${total !== undefined ? num(total) : ""}</div>`;
+    cell.onclick = () => { selDay = key; renderCalendar(); loadDayDetail(key); };
+    grid.appendChild(cell);
+  }
+  main.appendChild(grid);
+  if (!selDay) $("dayDetail").classList.add("hidden");
+}
+
+async function loadDayDetail(dateStr) {
+  const box = $("dayDetail");
+  box.classList.remove("hidden");
+  box.textContent = "Loading…";
+  const [f, x] = await Promise.all([
+    db.from("entries").select("food_name,quantity,calories_each").eq("entry_date", dateStr).order("created_at"),
+    db.from("exercise").select("name,calories_burned").eq("entry_date", dateStr).order("created_at")
+  ]);
+  if (f.error) { box.textContent = "Error: " + f.error.message; return; }
+  const foodsDay = f.data, exDay = x.data || [];
+  const eaten = foodsDay.reduce((s, e) => s + e.quantity * e.calories_each, 0);
+  const burned = exDay.reduce((s, e) => s + e.calories_burned, 0);
+  const pretty = new Date(dateStr + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  box.innerHTML = "";
+  const h = document.createElement("h3"); h.textContent = pretty; box.appendChild(h);
+  const sub = document.createElement("p"); sub.className = "muted"; sub.style.margin = "0 0 6px";
+  sub.textContent = `${num(eaten)} eaten` + (exDay.length ? ` − ${num(burned)} exercise = ${num(eaten - burned)} net` : "");
+  box.appendChild(sub);
+  if (!foodsDay.length && !exDay.length) { const p = document.createElement("p"); p.className = "muted"; p.textContent = "Nothing logged this day."; box.appendChild(p); return; }
+  const t = document.createElement("table");
+  t.innerHTML = "<thead><tr><th>Item</th><th class='num'>Qty</th><th class='num'>Cal</th></tr></thead>";
+  const tb = document.createElement("tbody");
+  const addRow = (name, q, c) => {
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"); a.textContent = name;
+    const b = document.createElement("td"); b.className = "num"; b.textContent = q;
+    const d = document.createElement("td"); d.className = "num"; d.textContent = c;
+    tr.append(a, b, d); tb.appendChild(tr);
+  };
+  foodsDay.forEach(e => addRow(e.food_name, fmt(e.quantity), fmt(e.quantity * e.calories_each)));
+  exDay.forEach(e => addRow("🏃 " + e.name, "", "−" + fmt(e.calories_burned)));
+  t.appendChild(tb); box.appendChild(t);
+}
+
+async function calStep(dir) {
+  if (calView === "year") calYear += dir;
+  else { calMonth += dir; if (calMonth > 11) { calMonth = 0; calYear++; } if (calMonth < 0) { calMonth = 11; calYear--; } }
+  selDay = null;
+  await ensureYear(calYear);
+  renderCalendar();
+}
+$("calPrev").onclick = () => calStep(-1);
+$("calNext").onclick = () => calStep(1);
+$("viewYear").onclick = () => { calView = "year"; renderCalendar(); };
+$("viewMonth").onclick = () => { calView = "month"; renderCalendar(); };
 
 /* ---------- auth ---------- */
 async function render(session) {
@@ -398,5 +621,7 @@ db.auth.onAuthStateChange((_e, session) => { if (_e === "SIGNED_IN" || _e === "S
 db.auth.getSession().then(({ data }) => render(data.session));
 </script>
 </body>
+</html>
+
 </html>
 

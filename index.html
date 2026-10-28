@@ -110,6 +110,24 @@
   #calNote { font-size:12px; margin:10px 0 0; }
   #dayDetail { margin-top:14px; }
   #dayDetail h3 { margin:0 0 4px; font-size:16px; }
+
+  /* Stats tab */
+  :root { --dot:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --dot:#60a5fa; } }
+  .wform { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .wform input { margin:0; min-width:0; }
+  .wform button { grid-column:1 / 3; margin:0; }
+  .rangebar { display:flex; gap:8px; margin-top:16px; }
+  .rangebar label { flex:1; font-size:12px; color:var(--muted); }
+  .rangebar input { margin:4px 0 0; }
+  .quick { display:flex; gap:6px; margin:8px 0; }
+  .quick button { flex:1; padding:9px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); font-size:13px; }
+  #chartBox svg { width:100%; height:auto; display:block; touch-action:pan-y; }
+  #readout { min-height:20px; font-size:13px; color:var(--muted); margin:6px 0 2px; }
+  .legend { font-size:12px; color:var(--muted); margin:2px 0 8px; }
+  .legend .l1 { color:var(--accent); font-weight:700; }
+  .legend .l2 { color:var(--dot); }
+  #tab-stats h3 { font-size:16px; margin:18px 0 4px; }
 </style>
 </head>
 <body>
@@ -149,6 +167,15 @@
         <tbody id="entryBody"></tbody>
       </table>
       <p id="emptyMsg" class="muted hidden">Nothing logged for this day yet.</p>
+
+      <h3 style="font-size:16px;margin:22px 0 8px">Exercise</h3>
+      <div class="addrow">
+        <div class="foodwrap"><input id="exLabel" type="text" placeholder="Label (e.g. Run)" autocomplete="off"></div>
+        <input id="exCal" class="qty" style="width:110px" type="number" inputmode="decimal" step="any" min="0" placeholder="Cal burned">
+      </div>
+      <div id="exMsg" style="min-height:20px;font-size:14px;color:var(--danger);margin:6px 0"></div>
+      <button class="primary" id="addExBtn">Add exercise</button>
+      <table><tbody id="exBody"></tbody></table>
     </section>
 
     <section id="tab-foods" class="hidden">
@@ -195,7 +222,29 @@
       <p id="calNote" class="muted"></p>
       <div id="dayDetail" class="hidden"></div>
     </section>
-    <section id="tab-stats" class="hidden"><h2>Stats</h2><p class="muted">Placeholder: stats go here.</p>
+    <section id="tab-stats" class="hidden"><h2>Estimated weight</h2>
+      <div class="wform">
+        <input id="wDate" type="date" aria-label="Weigh-in date">
+        <input id="wVal" type="number" inputmode="decimal" step="any" min="0" placeholder="Weight (lb)">
+        <button class="primary" id="wAddBtn">Save weigh-in</button>
+      </div>
+      <div id="wMsg" style="min-height:20px;font-size:14px;color:var(--danger);margin:6px 0"></div>
+
+      <div class="rangebar">
+        <label>From<input id="rFrom" type="date"></label>
+        <label>To<input id="rTo" type="date"></label>
+      </div>
+      <div class="quick" id="quick">
+        <button data-r="7">1W</button><button data-r="30">1M</button><button data-r="90">3M</button><button data-r="all">All</button>
+      </div>
+
+      <div id="readout"></div>
+      <div id="chartBox"></div>
+      <div class="legend"><span class="l1">━</span> estimate &nbsp; <span class="l2">●</span> weigh-in</div>
+      <p id="statNote" class="muted" style="font-size:13px">Loading…</p>
+
+      <h3>Weigh-ins</h3>
+      <table><tbody id="wBody"></tbody></table>
       <button class="primary" id="logoutBtn" style="margin-top:24px">Sign out</button></section>
   </main>
   <nav>
@@ -233,6 +282,7 @@ function showTab(name) {
   document.querySelectorAll("main section").forEach(s => s.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
   if (name === "calendar") loadCalendar();
+  if (name === "stats") loadStats();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
@@ -364,7 +414,55 @@ $("foodInput").addEventListener("keydown", e => {
 });
 
 /* ---------- entries ---------- */
-async function loadEntries() {
+async function loadEntries() { await Promise.all([loadFoodEntries(), loadExercise()]); }
+
+async function loadExercise() {
+  const { data, error } = await db.from("exercise").select("id,name,calories_burned")
+    .eq("entry_date", $("logDate").value).order("created_at");
+  const body = $("exBody");
+  body.innerHTML = "";
+  if (error) { $("exMsg").textContent = "Error: " + error.message; return; }
+  let total = 0;
+  data.forEach(e => {
+    total += e.calories_burned;
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"); a.textContent = "🏃 " + e.name;
+    const b = document.createElement("td"); b.className = "num"; b.textContent = "−" + fmt(e.calories_burned);
+    const c = document.createElement("td"); c.className = "del";
+    const btn = document.createElement("button"); btn.textContent = "×"; btn.setAttribute("aria-label", "Delete");
+    btn.onclick = async () => {
+      if (!confirm(`Delete "${e.name}"?`)) return;
+      const { error } = await db.from("exercise").delete().eq("id", e.id);
+      if (error) $("exMsg").textContent = "Error: " + error.message; else loadExercise();
+    };
+    c.appendChild(btn);
+    tr.append(a, b, c);
+    body.appendChild(tr);
+  });
+  if (data.length > 1) {
+    const tr = document.createElement("tr"); tr.className = "total";
+    const a = document.createElement("td"); a.textContent = "Total burned";
+    const b = document.createElement("td"); b.className = "num"; b.textContent = "−" + fmt(total);
+    tr.append(a, b, document.createElement("td"));
+    body.appendChild(tr);
+  }
+}
+
+async function addExercise() {
+  const msg = $("exMsg");
+  msg.textContent = "";
+  const name = $("exLabel").value.trim();
+  const cal = parseFloat($("exCal").value);
+  if (!name) { msg.textContent = "Enter a label."; return; }
+  if (!(cal > 0)) { msg.textContent = "Enter calories burned (above 0)."; return; }
+  const { error } = await db.from("exercise").insert({ entry_date: $("logDate").value, name, calories_burned: cal });
+  if (error) { msg.textContent = "Error: " + error.message; return; }
+  $("exLabel").value = ""; $("exCal").value = "";
+  loadExercise();
+}
+$("addExBtn").onclick = addExercise;
+
+async function loadFoodEntries() {
   const date = $("logDate").value;
   const { data, error } = await db.from("entries")
     .select("id,food_name,quantity,calories_each")
@@ -603,6 +701,171 @@ $("calNext").onclick = () => calStep(1);
 $("viewYear").onclick = () => { calView = "year"; renderCalendar(); };
 $("viewMonth").onclick = () => { calView = "month"; renderCalendar(); };
 
+/* ---------- stats / weight estimate ---------- */
+const BASELINE = 2500;    // calories burned per day doing nothing
+const CAL_PER_LB = 3500;  // calories per pound of body weight
+let weighIns = [], statSeries = [], rangeCustom = false;
+
+async function fetchAll(table, cols, fromD, toD) {
+  const out = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await db.from(table).select(cols)
+      .gte("entry_date", fromD).lte("entry_date", toD).order("id").range(from, from + 999);
+    if (error) throw error;
+    out.push(...data);
+    if (data.length < 1000) break;
+    from += 1000;
+  }
+  return out;
+}
+const prettyDate = s => new Date(s + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+
+async function loadStats() {
+  const note = $("statNote");
+  const today = todayStr();
+  $("wMsg").textContent = "";
+  if (!$("wDate").value) $("wDate").value = today;
+  $("wDate").max = today;
+  const { data, error } = await db.from("weights").select("id,weigh_date,weight").order("weigh_date");
+  if (error) { note.textContent = "Error: " + error.message + " (Did you run 4-weights.sql in Supabase?)"; return; }
+  weighIns = data;
+  renderWeighList();
+  if (!weighIns.length) {
+    statSeries = []; $("chartBox").innerHTML = ""; $("readout").textContent = "";
+    note.textContent = "Enter a starting weight and date above to start the graph.";
+    return;
+  }
+  const start = weighIns[0].weigh_date;
+  try {
+    const [eRows, xRows] = await Promise.all([
+      fetchAll("entries", "entry_date,quantity,calories_each", start, today),
+      fetchAll("exercise", "entry_date,calories_burned", start, today)
+    ]);
+    const eaten = {}, burned = {};
+    eRows.forEach(r => { eaten[r.entry_date] = (eaten[r.entry_date] || 0) + r.quantity * r.calories_each; });
+    xRows.forEach(r => { burned[r.entry_date] = (burned[r.entry_date] || 0) + r.calories_burned; });
+    // One continuous line from the first weigh-in. A day changes the estimate only if 1,500+ calories were logged.
+    // Today is not counted until it is over, so today's point reflects everything through yesterday.
+    let w = Number(weighIns[0].weight), d = start;
+    statSeries = [{ d, w }];
+    while (d < today) {
+      if ((eaten[d] || 0) >= MIN_CAL) w -= (BASELINE + (burned[d] || 0) - eaten[d]) / CAL_PER_LB;
+      d = shiftDate(d, 1);
+      statSeries.push({ d, w });
+    }
+  } catch (e) { note.textContent = "Error: " + e.message; return; }
+  if (!rangeCustom) { $("rFrom").value = start; $("rTo").value = today; }
+  drawChart();
+}
+
+function renderWeighList() {
+  const b = $("wBody");
+  b.innerHTML = "";
+  weighIns.slice().reverse().forEach(x => {
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"); a.textContent = prettyDate(x.weigh_date) + (x === weighIns[0] ? "  (start)" : "");
+    const w = document.createElement("td"); w.className = "num"; w.textContent = fmt(x.weight) + " lb";
+    const c = document.createElement("td"); c.className = "del";
+    const btn = document.createElement("button"); btn.textContent = "×"; btn.setAttribute("aria-label", "Delete");
+    btn.onclick = async () => {
+      if (!confirm(`Delete the ${prettyDate(x.weigh_date)} weigh-in?` + (x === weighIns[0] ? "\nThe graph will start from your next weigh-in." : ""))) return;
+      const { error } = await db.from("weights").delete().eq("id", x.id);
+      if (error) $("wMsg").textContent = "Error: " + error.message; else loadStats();
+    };
+    c.appendChild(btn);
+    tr.append(a, w, c);
+    b.appendChild(tr);
+  });
+}
+
+async function saveWeight() {
+  const msg = $("wMsg");
+  msg.textContent = "";
+  const date = $("wDate").value, w = parseFloat($("wVal").value);
+  if (!date) { msg.textContent = "Pick a date."; return; }
+  if (!(w > 0)) { msg.textContent = "Enter your weight in pounds."; return; }
+  const { data: ex, error: e1 } = await db.from("weights").select("id").eq("weigh_date", date).limit(1);
+  if (e1) { msg.textContent = "Error: " + e1.message + " (Did you run 4-weights.sql?)"; return; }
+  const { error } = ex.length
+    ? await db.from("weights").update({ weight: w }).eq("id", ex[0].id)
+    : await db.from("weights").insert({ weigh_date: date, weight: w });
+  if (error) { msg.textContent = "Error: " + error.message; return; }
+  $("wVal").value = "";
+  await loadStats();
+}
+
+function drawChart() {
+  const box = $("chartBox"), note = $("statNote");
+  $("readout").textContent = "";
+  if (!statSeries.length) return;
+  const from = $("rFrom").value || statSeries[0].d, to = $("rTo").value || todayStr();
+  const pts = statSeries.filter(p => p.d >= from && p.d <= to);
+  const dots = weighIns.filter(x => x.weigh_date >= from && x.weigh_date <= to);
+  if (!pts.length) { box.innerHTML = ""; note.textContent = "No data in this range."; return; }
+
+  const W = 640, H = 300, L = 46, R = 14, T = 14, B = 30;
+  const dayNum = s => Math.round(new Date(s + "T12:00:00").getTime() / 864e5);
+  const d0 = dayNum(pts[0].d), span = Math.max(1, dayNum(pts[pts.length - 1].d) - d0);
+  const single = pts.length === 1;
+  const vals = pts.map(p => p.w).concat(dots.map(x => Number(x.weight)));
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 2) { const m = (hi + lo) / 2; lo = m - 1; hi = m + 1; }
+  const step = [0.5, 1, 2, 5, 10, 20, 50].find(s => s >= (hi - lo) / 4) || 50;
+  const yMin = Math.floor(lo / step) * step, yMax = Math.ceil(hi / step) * step;
+  const X = ds => single ? (L + W - R) / 2 : L + (dayNum(ds) - d0) / span * (W - L - R);
+  const Y = v => T + (yMax - v) / (yMax - yMin) * (H - T - B);
+  const lab = ds => new Date(ds + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: span > 330 ? "2-digit" : undefined });
+
+  let s = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Segoe UI, Roboto, sans-serif">`;
+  for (let v = yMin; v <= yMax + 1e-9; v += step) {
+    s += `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" style="stroke:var(--line)"/>`;
+    s += `<text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end" font-size="11" style="fill:var(--muted)">${fmt(v)}</text>`;
+  }
+  const n = single ? 1 : Math.min(5, span + 1);
+  for (let i = 0; i < n; i++) {
+    const ds = single ? pts[0].d : shiftDate(pts[0].d, Math.round(span * i / (n - 1)));
+    const anchor = n === 1 ? "middle" : i === 0 ? "start" : i === n - 1 ? "end" : "middle";
+    s += `<text x="${X(ds)}" y="${H - 8}" text-anchor="${anchor}" font-size="11" style="fill:var(--muted)">${lab(ds)}</text>`;
+  }
+  if (!single) s += `<path d="${pts.map((p, i) => (i ? "L" : "M") + X(p.d).toFixed(1) + " " + Y(p.w).toFixed(1)).join(" ")}" fill="none" stroke-width="2.5" stroke-linejoin="round" style="stroke:var(--accent)"/>`;
+  else s += `<circle cx="${X(pts[0].d)}" cy="${Y(pts[0].w)}" r="3" style="fill:var(--accent)"/>`;
+  s += `<line id="guide" y1="${T}" y2="${H - B}" style="stroke:var(--muted);stroke-dasharray:3 3;display:none"/><circle id="gdot" r="4" style="fill:var(--accent);display:none"/>`;
+  dots.forEach(x => { s += `<circle cx="${X(x.weigh_date)}" cy="${Y(Number(x.weight))}" r="5.5" stroke-width="2" style="fill:var(--dot);stroke:var(--bg)"/>`; });
+  s += "</svg>";
+  box.innerHTML = s;
+
+  const svgEl = box.querySelector("svg");
+  const move = ev => {
+    const r = svgEl.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W;
+    let best = pts[0], bd = Infinity;
+    pts.forEach(p => { const dd = Math.abs(X(p.d) - px); if (dd < bd) { bd = dd; best = p; } });
+    const g = svgEl.querySelector("#guide"), gd = svgEl.querySelector("#gdot");
+    g.setAttribute("x1", X(best.d)); g.setAttribute("x2", X(best.d)); g.style.display = "";
+    gd.setAttribute("cx", X(best.d)); gd.setAttribute("cy", Y(best.w)); gd.style.display = "";
+    const wi = weighIns.find(x => x.weigh_date === best.d);
+    $("readout").textContent = `${prettyDate(best.d)} · estimate ${best.w.toFixed(1)} lb` + (wi ? ` · weighed ${fmt(wi.weight)} lb` : "");
+  };
+  svgEl.addEventListener("pointermove", move);
+  svgEl.addEventListener("pointerdown", move);
+
+  const first = statSeries[0], last = statSeries[statSeries.length - 1], diff = last.w - first.w;
+  note.textContent = `Current estimate: ${last.w.toFixed(1)} lb (${diff <= 0 ? "−" : "+"}${Math.abs(diff).toFixed(1)} lb since ${prettyDate(first.d)}). ` +
+    `Days with under ${num(MIN_CAL)} calories logged hold weight flat, and today counts once it's over.`;
+}
+
+$("wAddBtn").onclick = saveWeight;
+["rFrom", "rTo"].forEach(id => $(id).addEventListener("change", () => { rangeCustom = true; drawChart(); }));
+document.querySelectorAll("#quick button").forEach(b => b.onclick = () => {
+  if (!statSeries.length) return;
+  const today = todayStr();
+  if (b.dataset.r === "all") { rangeCustom = false; $("rFrom").value = statSeries[0].d; }
+  else { rangeCustom = true; $("rFrom").value = shiftDate(today, -(Number(b.dataset.r) - 1)); }
+  $("rTo").value = today;
+  drawChart();
+});
+
 /* ---------- auth ---------- */
 async function render(session) {
   $("login").classList.toggle("hidden", !!session);
@@ -623,8 +886,5 @@ db.auth.onAuthStateChange((_e, session) => { if (_e === "SIGNED_IN" || _e === "S
 db.auth.getSession().then(({ data }) => render(data.session));
 </script>
 </body>
-</html>
-
-
 </html>
 

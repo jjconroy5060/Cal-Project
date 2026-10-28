@@ -8,9 +8,9 @@
 <title>Cal Tracker</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <style>
-  :root { --bg:#fff; --fg:#1a1a1a; --muted:#777; --accent:#2f7d4f; --line:#e3e3e3; }
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#777; --accent:#2f7d4f; --line:#e3e3e3; --card:#f5f6f7; --danger:#c0392b; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#16181a; --fg:#eee; --muted:#999; --accent:#5cc58a; --line:#33373b; }
+    :root { --bg:#16181a; --fg:#eee; --muted:#999; --accent:#5cc58a; --line:#33373b; --card:#202326; --danger:#e57368; }
   }
   * { box-sizing: border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
@@ -27,6 +27,32 @@
   .hidden { display:none !important; }
   #login { padding:32px 16px; max-width:360px; margin:0 auto; }
   .muted { color:var(--muted); }
+
+  /* Log tab */
+  .datebar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+  .datebar input { margin:0; flex:1; }
+  .datebar button { font-size:18px; padding:10px 14px; border-radius:8px; border:1px solid var(--line);
+    background:var(--card); color:var(--fg); }
+  .datebar button.today { font-size:14px; }
+  .addrow { display:flex; gap:8px; margin-bottom:4px; }
+  .addrow .qty { width:76px; flex:none; margin:0; text-align:center; }
+  .foodwrap { position:relative; flex:1; }
+  .foodwrap input { margin:0; }
+  #suggest { position:absolute; left:0; right:0; top:100%; z-index:20; margin:4px 0 0; padding:0; list-style:none;
+    background:var(--bg); border:1px solid var(--line); border-radius:8px; max-height:280px; overflow-y:auto;
+    box-shadow:0 6px 18px rgba(0,0,0,.18); }
+  #suggest li { display:flex; justify-content:space-between; gap:12px; padding:12px; border-bottom:1px solid var(--line); }
+  #suggest li:last-child { border-bottom:0; }
+  #suggest li.active { background:var(--card); }
+  #suggest .cal { color:var(--muted); white-space:nowrap; }
+  #logMsg2 { min-height:20px; font-size:14px; color:var(--danger); margin:6px 0; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th { text-align:left; font-size:12px; color:var(--muted); font-weight:500; padding:6px 4px; border-bottom:1px solid var(--line); }
+  td { padding:10px 4px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th.num, td.num { text-align:right; white-space:nowrap; }
+  td.del { width:36px; text-align:right; }
+  td.del button { background:none; border:0; color:var(--muted); font-size:20px; padding:4px 8px; }
+  tr.total td { font-weight:700; border-bottom:0; }
 </style>
 </head>
 <body>
@@ -43,7 +69,31 @@
 <!-- APP -->
 <div id="app" class="hidden">
   <main>
-    <section id="tab-log"><h2>Log Food</h2><p class="muted">Placeholder: entry form goes here.</p></section>
+    <section id="tab-log">
+      <div class="datebar">
+        <button id="prevDay" aria-label="Previous day">‹</button>
+        <input id="logDate" type="date">
+        <button id="nextDay" aria-label="Next day">›</button>
+        <button id="todayBtn" class="today">Today</button>
+      </div>
+
+      <div class="addrow">
+        <input id="qty" class="qty" type="number" inputmode="decimal" step="any" min="0" value="1" aria-label="Quantity">
+        <div class="foodwrap">
+          <input id="foodInput" type="text" placeholder="Start typing a food…" autocomplete="off" autocapitalize="off">
+          <ul id="suggest" class="hidden"></ul>
+        </div>
+      </div>
+      <div id="logMsg2"></div>
+      <button class="primary" id="addBtn">Add</button>
+
+      <table>
+        <thead><tr><th>Food</th><th class="num">Qty</th><th class="num">Cal</th><th></th></tr></thead>
+        <tbody id="entryBody"></tbody>
+      </table>
+      <p id="emptyMsg" class="muted hidden">Nothing logged for this day yet.</p>
+    </section>
+
     <section id="tab-foods" class="hidden"><h2>Food Reference</h2><p id="foodCount" class="muted">Loading…</p></section>
     <section id="tab-calendar" class="hidden"><h2>Calendar</h2><p class="muted">Placeholder: calendar goes here.</p></section>
     <section id="tab-stats" class="hidden"><h2>Stats</h2><p class="muted">Placeholder: stats go here.</p>
@@ -66,6 +116,20 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = id => document.getElementById(id);
 
+let foods = [];            // [{name, calories}]
+let selectedFood = null;   // food picked from the dropdown
+let matches = [];
+let activeIdx = 0;
+
+/* ---------- helpers ---------- */
+const fmt = n => String(Number(Number(n).toFixed(1)));
+function todayStr() { return new Date().toLocaleDateString("en-CA"); } // local YYYY-MM-DD
+function shiftDate(str, days) {
+  const d = new Date(str + "T12:00:00"); d.setDate(d.getDate() + days);
+  return d.toLocaleDateString("en-CA");
+}
+
+/* ---------- tabs ---------- */
 function showTab(name) {
   document.querySelectorAll("main section").forEach(s => s.classList.add("hidden"));
   $("tab-" + name).classList.remove("hidden");
@@ -73,25 +137,152 @@ function showTab(name) {
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
-async function loadFoodCount() {
-  const { count, error } = await db.from("foods").select("*", { count: "exact", head: true });
-  $("foodCount").textContent = error ? "Error: " + error.message : `Connected. ${count} foods in your reference table.`;
+/* ---------- foods ---------- */
+async function loadFoods() {
+  const { data, error } = await db.from("foods").select("name,calories").order("name").limit(2000);
+  if (error) { $("foodCount").textContent = "Error: " + error.message; return; }
+  foods = data;
+  $("foodCount").textContent = `Connected. ${foods.length} foods in your reference table.`;
 }
 
-function render(session) {
+/* ---------- dropdown ---------- */
+function renderSuggest() {
+  const q = $("foodInput").value.trim().toLowerCase();
+  if (!q) { hideSuggest(); return; }
+  const tokens = q.split(/\s+/);
+  matches = foods
+    .filter(f => tokens.every(t => f.name.toLowerCase().includes(t)))
+    .sort((a, b) => (b.name.toLowerCase().startsWith(q) - a.name.toLowerCase().startsWith(q)) || a.name.localeCompare(b.name))
+    .slice(0, 8);
+  activeIdx = 0;
+  const ul = $("suggest");
+  ul.innerHTML = "";
+  if (!matches.length) { hideSuggest(); return; }
+  matches.forEach((f, i) => {
+    const li = document.createElement("li");
+    if (i === 0) li.className = "active";
+    const n = document.createElement("span"); n.textContent = f.name;
+    const c = document.createElement("span"); c.className = "cal"; c.textContent = fmt(f.calories) + " cal";
+    li.append(n, c);
+    li.addEventListener("pointerdown", e => { e.preventDefault(); pickFood(f); });
+    ul.appendChild(li);
+  });
+  ul.classList.remove("hidden");
+}
+function hideSuggest() { $("suggest").classList.add("hidden"); }
+function pickFood(f) {
+  selectedFood = f;
+  $("foodInput").value = f.name;
+  hideSuggest();
+  $("logMsg2").textContent = "";
+}
+function moveActive(delta) {
+  const items = $("suggest").children;
+  if (!items.length) return;
+  items[activeIdx].classList.remove("active");
+  activeIdx = (activeIdx + delta + items.length) % items.length;
+  items[activeIdx].classList.add("active");
+  items[activeIdx].scrollIntoView({ block: "nearest" });
+}
+
+$("foodInput").addEventListener("input", () => { selectedFood = null; renderSuggest(); });
+$("foodInput").addEventListener("blur", () => setTimeout(hideSuggest, 100));
+$("foodInput").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") { e.preventDefault(); moveActive(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); moveActive(-1); }
+  else if (e.key === "Enter") {
+    e.preventDefault();
+    if (!$("suggest").classList.contains("hidden") && matches[activeIdx]) pickFood(matches[activeIdx]);
+    else addEntry();
+  } else if (e.key === "Escape") hideSuggest();
+});
+
+/* ---------- entries ---------- */
+async function loadEntries() {
+  const date = $("logDate").value;
+  const { data, error } = await db.from("entries")
+    .select("id,food_name,quantity,calories_each")
+    .eq("entry_date", date).order("created_at");
+  const body = $("entryBody");
+  body.innerHTML = "";
+  if (error) { $("logMsg2").textContent = "Error: " + error.message; return; }
+  $("emptyMsg").classList.toggle("hidden", data.length > 0);
+  let total = 0;
+  data.forEach(e => {
+    const cals = e.quantity * e.calories_each;
+    total += cals;
+    const tr = document.createElement("tr");
+    const tdName = document.createElement("td"); tdName.textContent = e.food_name;
+    const tdQty = document.createElement("td"); tdQty.className = "num"; tdQty.textContent = fmt(e.quantity);
+    const tdCal = document.createElement("td"); tdCal.className = "num"; tdCal.textContent = fmt(cals);
+    const tdDel = document.createElement("td"); tdDel.className = "del";
+    const btn = document.createElement("button"); btn.textContent = "×"; btn.setAttribute("aria-label", "Delete");
+    btn.onclick = async () => {
+      if (!confirm(`Delete "${e.food_name}"?`)) return;
+      const { error } = await db.from("entries").delete().eq("id", e.id);
+      if (error) $("logMsg2").textContent = "Error: " + error.message; else loadEntries();
+    };
+    tdDel.appendChild(btn);
+    tr.append(tdName, tdQty, tdCal, tdDel);
+    body.appendChild(tr);
+  });
+  if (data.length) {
+    const tr = document.createElement("tr"); tr.className = "total";
+    const a = document.createElement("td"); a.textContent = "Total"; a.colSpan = 2;
+    const b = document.createElement("td"); b.className = "num"; b.textContent = fmt(total);
+    const c = document.createElement("td");
+    tr.append(a, b, c);
+    body.appendChild(tr);
+  }
+}
+
+async function addEntry() {
+  const msg = $("logMsg2");
+  msg.textContent = "";
+  const typed = $("foodInput").value.trim().toLowerCase();
+  const food = selectedFood || foods.find(f => f.name.toLowerCase() === typed);
+  const qty = parseFloat($("qty").value);
+  if (!food) { msg.textContent = "Pick a food from the list (add new foods on the Foods tab)."; return; }
+  if (!(qty > 0)) { msg.textContent = "Enter a quantity above 0."; return; }
+  const { error } = await db.from("entries").insert({
+    entry_date: $("logDate").value, food_name: food.name, quantity: qty, calories_each: food.calories
+  });
+  if (error) { msg.textContent = "Error: " + error.message; return; }
+  selectedFood = null;
+  $("foodInput").value = "";
+  $("qty").value = 1;
+  hideSuggest();
+  await loadEntries();
+  $("foodInput").focus();
+}
+
+/* ---------- date controls ---------- */
+function setDate(str) { $("logDate").value = str; loadEntries(); }
+$("logDate").addEventListener("change", () => { if ($("logDate").value) loadEntries(); });
+$("prevDay").onclick = () => setDate(shiftDate($("logDate").value, -1));
+$("nextDay").onclick = () => setDate(shiftDate($("logDate").value, 1));
+$("todayBtn").onclick = () => setDate(todayStr());
+$("addBtn").onclick = addEntry;
+
+/* ---------- auth ---------- */
+async function render(session) {
   $("login").classList.toggle("hidden", !!session);
   $("app").classList.toggle("hidden", !session);
-  if (session) loadFoodCount();
+  if (session) {
+    if (!$("logDate").value) $("logDate").value = todayStr();
+    await loadFoods();
+    loadEntries();
+  }
 }
-
 $("loginBtn").onclick = async () => {
   const { error } = await db.auth.signInWithPassword({ email: $("email").value, password: $("password").value });
   $("loginMsg").textContent = error ? error.message : "";
 };
 $("logoutBtn").onclick = () => db.auth.signOut();
 
-db.auth.onAuthStateChange((_e, session) => render(session));
+db.auth.onAuthStateChange((_e, session) => { if (_e === "SIGNED_IN" || _e === "SIGNED_OUT") render(session); });
 db.auth.getSession().then(({ data }) => render(data.session));
 </script>
 </body>
 </html>
+

@@ -53,6 +53,27 @@
   td.del { width:36px; text-align:right; }
   td.del button { background:none; border:0; color:var(--muted); font-size:20px; padding:4px 8px; }
   tr.total td { font-weight:700; border-bottom:0; }
+
+  /* Foods tab */
+  .foodsbar { display:flex; gap:8px; margin-bottom:10px; }
+  .foodsbar input { margin:0; flex:1; }
+  .foodsbar button { width:auto; margin:0; padding:12px 16px; white-space:nowrap; }
+  #foodForm { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
+  #foodForm h3 { margin:0 0 10px; font-size:16px; }
+  #foodForm .two { display:flex; gap:8px; }
+  #foodForm .two input { min-width:0; }
+  #foodForm .btns { display:flex; gap:8px; }
+  #foodForm .btns button { margin:0; }
+  button.secondary { font-size:16px; padding:12px; border-radius:8px; border:1px solid var(--line);
+    background:var(--bg); color:var(--fg); width:100%; }
+  #formMsg { min-height:18px; font-size:14px; color:var(--danger); margin:0 0 8px; }
+  .tablewrap { max-height:58vh; overflow-y:auto; border:1px solid var(--line); border-radius:8px; }
+  .tablewrap table { margin:0; }
+  .tablewrap th { position:sticky; top:0; background:var(--card); z-index:1; padding:8px 6px; }
+  .tablewrap td { padding:10px 6px; }
+  td.act { white-space:nowrap; text-align:right; width:84px; }
+  td.act button { background:none; border:0; color:var(--muted); font-size:18px; padding:4px 8px; }
+  .na { color:var(--muted); }
 </style>
 </head>
 <body>
@@ -94,7 +115,34 @@
       <p id="emptyMsg" class="muted hidden">Nothing logged for this day yet.</p>
     </section>
 
-    <section id="tab-foods" class="hidden"><h2>Food Reference</h2><p id="foodCount" class="muted">Loading…</p></section>
+    <section id="tab-foods" class="hidden">
+      <div class="foodsbar">
+        <input id="foodSearch" type="search" placeholder="Search foods…" autocomplete="off">
+        <button class="primary" id="addFoodBtn">+ Add food</button>
+      </div>
+
+      <div id="foodForm" class="hidden">
+        <h3 id="formTitle">Add food</h3>
+        <input id="fName" type="text" placeholder="Name" autocomplete="off">
+        <div class="two">
+          <input id="fCal" type="number" inputmode="decimal" step="any" min="0" placeholder="Calories">
+          <input id="fProt" type="number" inputmode="decimal" step="any" min="0" placeholder="Protein (g)">
+        </div>
+        <div id="formMsg"></div>
+        <div class="btns">
+          <button class="primary" id="saveFoodBtn">Save</button>
+          <button class="secondary" id="cancelFoodBtn">Cancel</button>
+        </div>
+      </div>
+
+      <p id="foodCount" class="muted">Loading…</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Food</th><th class="num">Cal</th><th class="num">Protein</th><th></th></tr></thead>
+          <tbody id="foodsBody"></tbody>
+        </table>
+      </div>
+    </section>
     <section id="tab-calendar" class="hidden"><h2>Calendar</h2><p class="muted">Placeholder: calendar goes here.</p></section>
     <section id="tab-stats" class="hidden"><h2>Stats</h2><p class="muted">Placeholder: stats go here.</p>
       <button class="primary" id="logoutBtn" style="margin-top:24px">Sign out</button></section>
@@ -138,12 +186,78 @@ function showTab(name) {
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 /* ---------- foods ---------- */
+let editingId = null;
+
 async function loadFoods() {
-  const { data, error } = await db.from("foods").select("name,calories").order("name").limit(2000);
+  const { data, error } = await db.from("foods").select("id,name,calories,protein").order("name").limit(2000);
   if (error) { $("foodCount").textContent = "Error: " + error.message; return; }
   foods = data;
-  $("foodCount").textContent = `Connected. ${foods.length} foods in your reference table.`;
+  renderFoods();
 }
+
+function renderFoods() {
+  const q = $("foodSearch").value.trim().toLowerCase();
+  const list = foods.filter(f => f.name.toLowerCase().includes(q));
+  $("foodCount").textContent = q ? `${list.length} of ${foods.length} foods` : `${foods.length} foods`;
+  const body = $("foodsBody");
+  body.innerHTML = "";
+  list.forEach(f => {
+    const tr = document.createElement("tr");
+    const tdN = document.createElement("td"); tdN.textContent = f.name;
+    const tdC = document.createElement("td"); tdC.className = "num"; tdC.textContent = fmt(f.calories);
+    const tdP = document.createElement("td"); tdP.className = "num";
+    if (f.protein === null) { tdP.textContent = "N/A"; tdP.classList.add("na"); } else tdP.textContent = fmt(f.protein) + " g";
+    const tdA = document.createElement("td"); tdA.className = "act";
+    const ed = document.createElement("button"); ed.textContent = "✎"; ed.setAttribute("aria-label", "Edit");
+    ed.onclick = () => openFoodForm(f);
+    const del = document.createElement("button"); del.textContent = "×"; del.setAttribute("aria-label", "Delete");
+    del.onclick = async () => {
+      if (!confirm(`Delete "${f.name}" from your foods?\n(Past days that used it are not affected.)`)) return;
+      const { error } = await db.from("foods").delete().eq("id", f.id);
+      if (error) alert("Error: " + error.message); else loadFoods();
+    };
+    tdA.append(ed, del);
+    tr.append(tdN, tdC, tdP, tdA);
+    body.appendChild(tr);
+  });
+}
+
+function openFoodForm(f) {
+  editingId = f ? f.id : null;
+  $("formTitle").textContent = f ? "Edit food" : "Add food";
+  $("fName").value = f ? f.name : "";
+  $("fCal").value = f ? f.calories : "";
+  $("fProt").value = f && f.protein !== null ? f.protein : "";
+  $("formMsg").textContent = "";
+  $("foodForm").classList.remove("hidden");
+  $("foodForm").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("fName").focus();
+}
+function closeFoodForm() { $("foodForm").classList.add("hidden"); editingId = null; }
+
+async function saveFood() {
+  const msg = $("formMsg");
+  msg.textContent = "";
+  const name = $("fName").value.trim();
+  const calories = parseFloat($("fCal").value);
+  const protRaw = $("fProt").value.trim();
+  const protein = protRaw === "" ? null : parseFloat(protRaw);
+  if (!name) { msg.textContent = "Enter a name."; return; }
+  if (!(calories >= 0)) { msg.textContent = "Enter calories (0 or more)."; return; }
+  if (protein !== null && !(protein >= 0)) { msg.textContent = "Protein must be 0 or more (or leave blank for N/A)."; return; }
+  const row = { name, calories, protein };
+  const { error } = editingId
+    ? await db.from("foods").update(row).eq("id", editingId)
+    : await db.from("foods").insert(row);
+  if (error) { msg.textContent = error.code === "23505" ? "You already have a food with that name." : "Error: " + error.message; return; }
+  closeFoodForm();
+  await loadFoods();
+}
+
+$("addFoodBtn").onclick = () => openFoodForm(null);
+$("saveFoodBtn").onclick = saveFood;
+$("cancelFoodBtn").onclick = closeFoodForm;
+$("foodSearch").addEventListener("input", renderFoods);
 
 /* ---------- dropdown ---------- */
 function renderSuggest() {
@@ -245,7 +359,7 @@ async function addEntry() {
   if (!food) { msg.textContent = "Pick a food from the list (add new foods on the Foods tab)."; return; }
   if (!(qty > 0)) { msg.textContent = "Enter a quantity above 0."; return; }
   const { error } = await db.from("entries").insert({
-    entry_date: $("logDate").value, food_name: food.name, quantity: qty, calories_each: food.calories
+    entry_date: $("logDate").value, food_name: food.name, quantity: qty, calories_each: food.calories, protein_each: food.protein
   });
   if (error) { msg.textContent = "Error: " + error.message; return; }
   selectedFood = null;

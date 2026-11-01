@@ -227,6 +227,7 @@
         <input id="wDate" type="date" aria-label="Weigh-in date">
         <input id="wVal" type="number" inputmode="decimal" step="any" min="0" placeholder="Weight (lb)">
         <button class="primary" id="wAddBtn">Save weigh-in</button>
+        <button class="secondary hidden" id="wCancelBtn">Cancel edit</button>
       </div>
       <div id="wMsg" style="min-height:20px;font-size:14px;color:var(--danger);margin:6px 0"></div>
 
@@ -541,7 +542,8 @@ $("todayBtn").onclick = () => setDate(todayStr());
 $("addBtn").onclick = addEntry;
 
 /* ---------- calendar ---------- */
-const MIN_CAL = 1500, MAX_CAL = 3500;
+const MIN_CAL = 1500, MAX_CAL = 3500;   // color scale range
+const LOG_MIN = 1000;                    // days with less food than this are treated as not fully logged
 // [calories, hue]: green 1500-2000, yellow 2000-2500, red 2500+
 const HUE_STOPS = [[1500,135],[1950,100],[2000,58],[2500,48],[2560,12],[3500,0]];
 function hueFor(c) {
@@ -553,7 +555,7 @@ function hueFor(c) {
   return 0;
 }
 const colorFor = c => c >= MIN_CAL ? `hsl(${hueFor(c)}, 75%, 58%)` : null;
-// Calendar color: net calories can dip below 1,500 after exercise; that still shows as the greenest shade
+// Calendar color: net calories can dip below 1,500 after exercise (or a light day); that still shows as the greenest shade
 const calColor = c => colorFor(Math.max(c, MIN_CAL));
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const pad = n => String(n).padStart(2, "0");
@@ -615,12 +617,12 @@ function renderCalendar() {
   if (calView === "year") {
     $("calTitle").textContent = calYear;
     $("dayDetail").classList.add("hidden");
-    $("calNote").textContent = "Each month is colored by its average net calories (eaten − exercise), counting only days with 1,500+ eaten.";
+    $("calNote").textContent = "Each month is colored by its average net calories (eaten − exercise), counting only days with 1,000+ eaten.";
     const grid = document.createElement("div"); grid.className = "yeargrid";
     for (let m = 0; m < 12; m++) {
       let sum = 0, cnt = 0;
       Object.entries(data).forEach(([d, t]) => {
-        if (+d.slice(5, 7) === m + 1 && t.e >= MIN_CAL) { sum += t.e - t.x; cnt++; }
+        if (+d.slice(5, 7) === m + 1 && t.e >= LOG_MIN) { sum += t.e - t.x; cnt++; }
       });
       const avg = cnt ? sum / cnt : null;
       const tile = document.createElement("div");
@@ -635,7 +637,7 @@ function renderCalendar() {
   }
 
   $("calTitle").textContent = `${MONTHS[calMonth]} ${calYear}`;
-  $("calNote").textContent = "Colors use net calories (eaten − exercise). Days with under 1,500 eaten are treated as not fully logged and left uncolored (the gray number is what was eaten).";
+  $("calNote").textContent = "Colors use net calories (eaten − exercise). Days with under 1,000 eaten are treated as not fully logged and left uncolored (the gray number is what was eaten).";
   const grid = document.createElement("div"); grid.className = "monthgrid";
   "SMTWTFS".split("").forEach(d => { const h = document.createElement("div"); h.className = "dow"; h.textContent = d; grid.appendChild(h); });
   const startDow = new Date(calYear, calMonth, 1).getDay();
@@ -645,8 +647,8 @@ function renderCalendar() {
   for (let d = 1; d <= dim; d++) {
     const key = `${calYear}-${pad(calMonth + 1)}-${pad(d)}`;
     const t = data[key];
-    // Colored only if 1,500+ was eaten; the color and number shown are net (eaten − exercise)
-    const col = t && t.e >= MIN_CAL ? calColor(t.e - t.x) : null;
+    // Colored only if 1,000+ was eaten; the color and number shown are net (eaten − exercise)
+    const col = t && t.e >= LOG_MIN ? calColor(t.e - t.x) : null;
     const total = col ? t.e - t.x : (t && t.e > 0 ? t.e : undefined);
     const cell = document.createElement("div");
     cell.className = "day" + (col ? "" : " uncolored") + (key === today ? " today" : "") + (key === selDay ? " sel" : "");
@@ -749,12 +751,12 @@ async function loadStats() {
     const eaten = {}, burned = {};
     eRows.forEach(r => { eaten[r.entry_date] = (eaten[r.entry_date] || 0) + r.quantity * r.calories_each; });
     xRows.forEach(r => { burned[r.entry_date] = (burned[r.entry_date] || 0) + r.calories_burned; });
-    // One continuous line from the first weigh-in. A day changes the estimate only if 1,500+ calories were logged.
+    // One continuous line from the first weigh-in. A day changes the estimate only if 1,000+ calories were logged.
     // Today is not counted until it is over, so today's point reflects everything through yesterday.
     let w = Number(weighIns[0].weight), d = start;
     statSeries = [{ d, w }];
     while (d < today) {
-      if ((eaten[d] || 0) >= MIN_CAL) w -= (BASELINE + (burned[d] || 0) - eaten[d]) / CAL_PER_LB;
+      if ((eaten[d] || 0) >= LOG_MIN) w -= (BASELINE + (burned[d] || 0) - eaten[d]) / CAL_PER_LB;
       d = shiftDate(d, 1);
       statSeries.push({ d, w });
     }
@@ -770,18 +772,41 @@ function renderWeighList() {
     const tr = document.createElement("tr");
     const a = document.createElement("td"); a.textContent = prettyDate(x.weigh_date) + (x === weighIns[0] ? "  (start)" : "");
     const w = document.createElement("td"); w.className = "num"; w.textContent = fmt(x.weight) + " lb";
-    const c = document.createElement("td"); c.className = "del";
+    const c = document.createElement("td"); c.className = "act";
+    const ed = document.createElement("button"); ed.textContent = "✎"; ed.setAttribute("aria-label", "Edit");
+    ed.onclick = () => startWeightEdit(x);
     const btn = document.createElement("button"); btn.textContent = "×"; btn.setAttribute("aria-label", "Delete");
     btn.onclick = async () => {
       if (!confirm(`Delete the ${prettyDate(x.weigh_date)} weigh-in?` + (x === weighIns[0] ? "\nThe graph will start from your next weigh-in." : ""))) return;
       const { error } = await db.from("weights").delete().eq("id", x.id);
-      if (error) $("wMsg").textContent = "Error: " + error.message; else loadStats();
+      if (error) $("wMsg").textContent = "Error: " + error.message; else { if (editingWId === x.id) cancelWeightEdit(); loadStats(); }
     };
-    c.appendChild(btn);
+    c.append(ed, btn);
     tr.append(a, w, c);
     b.appendChild(tr);
   });
 }
+
+let editingWId = null;
+function startWeightEdit(x) {
+  editingWId = x.id;
+  $("wDate").value = x.weigh_date;
+  $("wVal").value = x.weight;
+  $("wAddBtn").textContent = "Update weigh-in";
+  $("wCancelBtn").classList.remove("hidden");
+  $("wMsg").textContent = "";
+  $("wDate").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("wVal").focus();
+}
+function cancelWeightEdit() {
+  editingWId = null;
+  $("wDate").value = todayStr();
+  $("wVal").value = "";
+  $("wAddBtn").textContent = "Save weigh-in";
+  $("wCancelBtn").classList.add("hidden");
+  $("wMsg").textContent = "";
+}
+$("wCancelBtn").onclick = cancelWeightEdit;
 
 async function saveWeight() {
   const msg = $("wMsg");
@@ -789,6 +814,16 @@ async function saveWeight() {
   const date = $("wDate").value, w = parseFloat($("wVal").value);
   if (!date) { msg.textContent = "Pick a date."; return; }
   if (!(w > 0)) { msg.textContent = "Enter your weight in pounds."; return; }
+  if (editingWId) {
+    const { data: clash, error: ce } = await db.from("weights").select("id").eq("weigh_date", date).neq("id", editingWId).limit(1);
+    if (ce) { msg.textContent = "Error: " + ce.message; return; }
+    if (clash.length) { msg.textContent = "You already have a weigh-in on that date."; return; }
+    const { error: ue } = await db.from("weights").update({ weigh_date: date, weight: w }).eq("id", editingWId);
+    if (ue) { msg.textContent = "Error: " + ue.message; return; }
+    cancelWeightEdit();
+    await loadStats();
+    return;
+  }
   const { data: ex, error: e1 } = await db.from("weights").select("id").eq("weigh_date", date).limit(1);
   if (e1) { msg.textContent = "Error: " + e1.message + " (Did you run 4-weights.sql?)"; return; }
   const { error } = ex.length
@@ -856,7 +891,7 @@ function drawChart() {
 
   const first = statSeries[0], last = statSeries[statSeries.length - 1], diff = last.w - first.w;
   note.textContent = `Current estimate: ${last.w.toFixed(1)} lb (${diff <= 0 ? "−" : "+"}${Math.abs(diff).toFixed(1)} lb since ${prettyDate(first.d)}). ` +
-    `Days with under ${num(MIN_CAL)} calories logged hold weight flat, and today counts once it's over.`;
+    `Days with under ${num(LOG_MIN)} calories logged hold weight flat, and today counts once it's over.`;
 }
 
 $("wAddBtn").onclick = saveWeight;

@@ -128,6 +128,19 @@
   .legend .l1 { color:var(--accent); font-weight:700; }
   .legend .l2 { color:var(--dot); }
   #tab-stats h3 { font-size:16px; margin:18px 0 4px; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:50; display:flex; align-items:center; justify-content:center; padding:16px; }
+  .modal .box { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:14px;
+    width:100%; max-width:420px; max-height:70vh; overflow-y:auto; }
+  .modal .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-weight:600; }
+  .modal .head button { background:none; border:0; color:var(--muted); font-size:26px; padding:0 6px; }
+  .modal table { font-size:12px; margin-top:0; }
+  .modal td { padding:6px 4px; }
+  .modal td.act button { font-size:15px; }
+  .stepper { display:inline-flex; align-items:center; gap:2px; }
+  .stepper button { width:30px; height:30px; padding:0; font-size:18px; line-height:1; border-radius:6px;
+    border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  .stepper button:disabled { opacity:.4; }
+  .qtytxt { min-width:26px; text-align:center; }
 </style>
 </head>
 <body>
@@ -244,8 +257,13 @@
       <div class="legend"><span class="l1">━</span> estimate &nbsp; <span class="l2">●</span> weigh-in</div>
       <p id="statNote" class="muted" style="font-size:13px">Loading…</p>
 
-      <h3>Weigh-ins</h3>
-      <table><tbody id="wBody"></tbody></table>
+      <button class="secondary" id="wListBtn" style="margin-top:14px">View weigh-ins</button>
+      <div id="wModal" class="modal hidden">
+        <div class="box">
+          <div class="head"><span>Weigh-ins</span><button id="wCloseBtn" aria-label="Close">×</button></div>
+          <table><tbody id="wBody"></tbody></table>
+        </div>
+      </div>
       <button class="primary" id="logoutBtn" style="margin-top:24px">Sign out</button></section>
   </main>
   <nav>
@@ -478,7 +496,27 @@ async function loadFoodEntries() {
     total += cals;
     const tr = document.createElement("tr");
     const tdName = document.createElement("td"); tdName.textContent = e.food_name;
-    const tdQty = document.createElement("td"); tdQty.className = "num"; tdQty.textContent = fmt(e.quantity);
+    const tdQty = document.createElement("td"); tdQty.className = "num";
+    const stepper = document.createElement("span"); stepper.className = "stepper";
+    const minus = document.createElement("button"); minus.textContent = "−"; minus.setAttribute("aria-label", "One less");
+    const qtyTxt = document.createElement("span"); qtyTxt.className = "qtytxt"; qtyTxt.textContent = fmt(e.quantity);
+    const plus = document.createElement("button"); plus.textContent = "+"; plus.setAttribute("aria-label", "One more");
+    const bump = async d => {
+      minus.disabled = plus.disabled = true;
+      const nq = Math.round((e.quantity + d) * 1000) / 1000;
+      if (nq <= 0) {
+        if (!confirm(`Remove "${e.food_name}"?`)) { minus.disabled = plus.disabled = false; return; }
+        const { error } = await db.from("entries").delete().eq("id", e.id);
+        if (error) { $("logMsg2").textContent = "Error: " + error.message; minus.disabled = plus.disabled = false; } else loadFoodEntries();
+        return;
+      }
+      const { error } = await db.from("entries").update({ quantity: nq }).eq("id", e.id);
+      if (error) { $("logMsg2").textContent = "Error: " + error.message; minus.disabled = plus.disabled = false; } else loadFoodEntries();
+    };
+    minus.onclick = () => bump(-1);
+    plus.onclick = () => bump(1);
+    stepper.append(minus, qtyTxt, plus);
+    tdQty.appendChild(stepper);
     const tdCal = document.createElement("td"); tdCal.className = "num"; tdCal.textContent = fmt(cals);
     const tdDel = document.createElement("td"); tdDel.className = "del";
     const btn = document.createElement("button"); btn.textContent = "×"; btn.setAttribute("aria-label", "Delete");
@@ -790,6 +828,7 @@ function renderWeighList() {
 let editingWId = null;
 function startWeightEdit(x) {
   editingWId = x.id;
+  $("wModal").classList.add("hidden");
   $("wDate").value = x.weigh_date;
   $("wVal").value = x.weight;
   $("wAddBtn").textContent = "Update weigh-in";
@@ -807,6 +846,9 @@ function cancelWeightEdit() {
   $("wMsg").textContent = "";
 }
 $("wCancelBtn").onclick = cancelWeightEdit;
+$("wListBtn").onclick = () => $("wModal").classList.remove("hidden");
+$("wCloseBtn").onclick = () => $("wModal").classList.add("hidden");
+$("wModal").addEventListener("click", e => { if (e.target === $("wModal")) $("wModal").classList.add("hidden"); });
 
 async function saveWeight() {
   const msg = $("wMsg");
@@ -890,8 +932,8 @@ function drawChart() {
   svgEl.addEventListener("pointerdown", move);
 
   const first = statSeries[0], last = statSeries[statSeries.length - 1], diff = last.w - first.w;
-  note.textContent = `Current estimate: ${last.w.toFixed(1)} lb (${diff <= 0 ? "−" : "+"}${Math.abs(diff).toFixed(1)} lb since ${prettyDate(first.d)}). ` +
-    `Days with under ${num(LOG_MIN)} calories logged hold weight flat, and today counts once it's over.`;
+  const days = statSeries.length - 1;
+  note.textContent = `Current estimate: ${last.w.toFixed(1)} lb (${diff <= 0 ? "−" : "+"}${Math.abs(diff).toFixed(1)} lb in ${days} ${days === 1 ? "day" : "days"})`;
 }
 
 $("wAddBtn").onclick = saveWeight;
